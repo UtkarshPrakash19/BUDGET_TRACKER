@@ -358,14 +358,14 @@ for i in range(5, -1, -1):
         ps = 0.0
     else:
         inc = safe_sum(pd.DataFrame(mo.get("incomes", []))["amount"]) if mo.get("incomes") else 0.0
-        ex = safe_sum(pd.DataFrame(mo.get("expenses", []))["amount"]) if mo.get("expenses") else 0.0
-        ps = safe_sum(pd.DataFrame(mo.get("planned_savings", []))["amount"]) if mo.get("planned_savings") else 0.0
+        ex  = safe_sum(pd.DataFrame(mo.get("expenses", []))["amount"]) if mo.get("expenses") else 0.0
+        ps  = safe_sum(pd.DataFrame(mo.get("planned_savings", []))["amount"]) if mo.get("planned_savings") else 0.0
 
     inc_series.append(inc)
     exp_series.append(ex)
     net_left_series.append(inc - (ex + ps))
 
-# ---- SANITIZE: NaN/inf -> 0 to avoid renderer crash ----
+# ---- SANITIZE + GUARDS ----
 def _clean(arr):
     a = np.array(arr, dtype=float)
     return np.nan_to_num(a, nan=0.0, posinf=0.0, neginf=0.0)
@@ -374,30 +374,39 @@ inc_arr = _clean(inc_series)
 exp_arr = _clean(exp_series)
 net_arr = _clean(net_left_series)
 
-fig_bar, axb = plt.subplots(figsize=(8, 4), dpi=120)
-fig_bar.patch.set_alpha(0)
-axb.set_facecolor("none")
+# If nothing to plot, show a friendly note and skip pyplot
+if len(months) == 0:
+    st.info("No months to display yet.")
+else:
+    all_zero = (np.all(inc_arr == 0) and np.all(exp_arr == 0) and np.all(net_arr == 0))
+    if all_zero:
+        st.info("No data for the last 6 months to plot yet.")
+    else:
+        fig_bar, axb = plt.subplots(figsize=(8, 4), dpi=120)
+        fig_bar.patch.set_alpha(0)
+        axb.set_facecolor("none")
 
-x = np.arange(len(months))
-barw = 0.25
-axb.bar(x - barw, inc_arr, width=barw, label="Income")
-axb.bar(x,         exp_arr, width=barw, label="Expenses")
-axb.bar(x + barw,  net_arr, width=barw, label="Net Left")
-axb.set_xticks(x)
-axb.set_xticklabels(months)
-axb.set_ylabel("₹")
-axb.legend()
-axb.grid(True, linestyle="--", alpha=0.4)
+        x = np.arange(len(months))
+        barw = 0.25
+        axb.bar(x - barw, inc_arr, width=barw, label="Income")
+        axb.bar(x,         exp_arr, width=barw, label="Expenses")
+        axb.bar(x + barw,  net_arr, width=barw, label="Net Left")
+        axb.set_xticks(x)
+        axb.set_xticklabels(months)
+        axb.set_ylabel("Amount")
+        axb.legend()
+        axb.grid(True, linestyle="--", alpha=0.4)
 
-# safe annotation bump
-peak = float(np.max(np.abs(net_arr))) if len(net_arr) else 0.0
-bump = peak * 0.02 if peak > 0 else 1000.0
-for idx, val in enumerate(net_arr):
-    axb.text(idx + barw, float(val) + bump, inr(val), ha="center", fontsize=8)
+        # Annotations only if there is a visible peak
+        peak = float(np.max(np.abs(net_arr)))
+        if peak > 0:
+            bump = peak * 0.02
+            for idx, val in enumerate(net_arr):
+                axb.text(idx + barw, float(val) + bump, inr(val), ha="center", fontsize=8)
 
-# NOTE: avoid rare renderer issues by not passing unexpected kwargs
-st.pyplot(fig_bar)  # removed transparent=True to be extra-safe
-
+        # Extra safety: disable tight layout (can fail with NaN artists)
+        # and avoid passing extra kwargs to st.pyplot
+        st.pyplot(fig_bar, use_container_width=True)
 # ----------------- One-off inflows -----------------
 st.divider()
 st.subheader("📥 One-off / Future Inflows")
