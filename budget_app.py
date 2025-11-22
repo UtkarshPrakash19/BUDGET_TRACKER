@@ -365,26 +365,38 @@ for i in range(5, -1, -1):
     exp_series.append(ex)
     net_left_series.append(inc - (ex + ps))
 
+# ---- SANITIZE: NaN/inf -> 0 to avoid renderer crash ----
+def _clean(arr):
+    a = np.array(arr, dtype=float)
+    return np.nan_to_num(a, nan=0.0, posinf=0.0, neginf=0.0)
+
+inc_arr = _clean(inc_series)
+exp_arr = _clean(exp_series)
+net_arr = _clean(net_left_series)
+
 fig_bar, axb = plt.subplots(figsize=(8, 4), dpi=120)
 fig_bar.patch.set_alpha(0)
 axb.set_facecolor("none")
 
 x = np.arange(len(months))
 barw = 0.25
-axb.bar(x - barw, inc_series, width=barw, label="Income")
-axb.bar(x, exp_series, width=barw, label="Expenses")
-axb.bar(x + barw, net_left_series, width=barw, label="Net Left")
+axb.bar(x - barw, inc_arr, width=barw, label="Income")
+axb.bar(x,         exp_arr, width=barw, label="Expenses")
+axb.bar(x + barw,  net_arr, width=barw, label="Net Left")
 axb.set_xticks(x)
 axb.set_xticklabels(months)
 axb.set_ylabel("₹")
 axb.legend()
 axb.grid(True, linestyle="--", alpha=0.4)
 
-for idx, val in enumerate(net_left_series):
-    bump = (max(net_left_series + [0]) * 0.02) if max(net_left_series + [0]) else 1000
-    axb.text(idx + barw, val + bump, inr(val), ha="center", fontsize=8)
+# safe annotation bump
+peak = float(np.max(np.abs(net_arr))) if len(net_arr) else 0.0
+bump = peak * 0.02 if peak > 0 else 1000.0
+for idx, val in enumerate(net_arr):
+    axb.text(idx + barw, float(val) + bump, inr(val), ha="center", fontsize=8)
 
-st.pyplot(fig_bar, transparent=True)
+# NOTE: avoid rare renderer issues by not passing unexpected kwargs
+st.pyplot(fig_bar)  # removed transparent=True to be extra-safe
 
 # ----------------- One-off inflows -----------------
 st.divider()
