@@ -49,12 +49,11 @@ def inr(x: float) -> str:
     except Exception:
         return "₹0"
 
-def safe_sum(series):
-    return float(pd.to_numeric(series, errors="coerce").fillna(0).sum())
-
 # ----------------- Default Month Template -----------------
 def default_month_payload(ym: str):
+    """Create a month dict with inputs based on user's template for December by default."""
     year, month = map(int, ym.split("-"))
+
     payload = {
         "incomes": [
             {"source": "Salary", "amount": 73833.0, "note": "Monthly salary"},
@@ -66,6 +65,7 @@ def default_month_payload(ym: str):
             {"item": "Bike EMI", "amount": 6181.0, "category": "Necessity", "note": "EMI"},
             {"item": "Send to Sister", "amount": 10000.0, "category": "Necessity", "note": "Family support"},
             {"item": "Investment", "amount": 5000.0, "category": "Necessity", "note": "SIP / Investment"},
+            # December tracking (personal expense plan)
             {"item": "Ear bud EMI", "amount": 665.0, "category": "Want", "note": "Gadget EMI"},
             {"item": "Meds", "amount": 2100.0, "category": "Necessity", "note": "Health"},
             {"item": "GYM", "amount": 2000.0, "category": "Need", "note": "Fitness"},
@@ -150,6 +150,7 @@ with left:
     df_inc = pd.DataFrame(month_obj.get("incomes", []))
     if df_inc.empty:
         df_inc = pd.DataFrame([{"source": "", "amount": 0.0, "note": ""}])
+    # add delete column
     if "delete" not in df_inc.columns:
         df_inc["delete"] = False
 
@@ -184,118 +185,109 @@ with left:
 with right:
     st.subheader("Expenses")
     df_exp = pd.DataFrame(month_obj.get("expenses", []))
-
-    # --- Backward compatibility & defaults ---
     if df_exp.empty:
-        df_exp = pd.DataFrame([{
-            "item": "", "amount": 0.0, "actual": 0.0, "category": "Necessity", "note": ""
-        }])
-    else:
-        # ensure cols exist
-        if "amount" not in df_exp.columns:
-            df_exp["amount"] = 0.0
-        if "actual" not in df_exp.columns:
-            # first time: mirror amount as starting actual
-            df_exp["actual"] = pd.to_numeric(df_exp.get("amount", 0), errors="coerce").fillna(0.0)
-        if "category" not in df_exp.columns:
-            df_exp["category"] = "Necessity"
-        if "note" not in df_exp.columns:
-            df_exp["note"] = ""
-
+        df_exp = pd.DataFrame([{"item": "", "amount": 0.0, "category": "Necessity", "note": ""}])
     if "delete" not in df_exp.columns:
         df_exp["delete"] = False
 
-    # variance (read-only): actual - amount
-    _tmp = df_exp.copy()
-    _tmp["variance"] = pd.to_numeric(_tmp.get("actual", 0), errors="coerce").fillna(0.0) - \
-                       pd.to_numeric(_tmp.get("amount", 0), errors="coerce").fillna(0.0)
-
     edited_exp = st.data_editor(
-        _tmp,
+        df_exp,
         num_rows="dynamic",
         use_container_width=True,
         column_config={
-            "amount":   st.column_config.NumberColumn("amount (budget)", min_value=0.0, step=100.0, help="Planned/target"),
-            "actual":   st.column_config.NumberColumn("actual (spent)",  min_value=0.0, step=100.0, help="What you actually spent"),
-            "variance": st.column_config.NumberColumn("variance (actual - amount)", disabled=True),
+            "amount": st.column_config.NumberColumn("amount", min_value=0.0, step=100.0),
             "category": st.column_config.SelectboxColumn("category", options=CATEGORIES, default="Necessity"),
-            "delete":   st.column_config.CheckboxColumn("❌ Delete", help="Tick to remove this row on save"),
+            "delete": st.column_config.CheckboxColumn("❌ Delete", help="Tick to remove this row on save"),
         },
-        hide_index=True,
     )
-
-    # strip helper col before compute/save
-    edited_exp = edited_exp.drop(columns=["variance"], errors="ignore")
 
 st.divider()
 
 # ----------------- Compute Metrics -----------------
-# drop deleted
+def safe_sum(series):
+    return float(pd.to_numeric(series, errors="coerce").fillna(0).sum())
+
+# filter out rows marked for deletion (live preview bhi clean rahe)
 inc_eff = edited_inc[edited_inc.get("delete") != True].drop(columns=["delete"], errors="ignore").copy()
 exp_eff = edited_exp[edited_exp.get("delete") != True].drop(columns=["delete"], errors="ignore").copy()
 ps_eff  = edited_ps[edited_ps.get("delete") != True].drop(columns=["delete"], errors="ignore").copy()
 
-# totals
 total_income = safe_sum(inc_eff.get("amount", []))
-actual_expense_total = safe_sum(exp_eff.get("actual", []))
-if actual_expense_total == 0 and "amount" in exp_eff.columns:
-    # fallback for older data
-    actual_expense_total = safe_sum(exp_eff.get("amount", []))
-expense_total = actual_expense_total
-
 planned_savings_amt = safe_sum(ps_eff.get("amount", []))
+expense_total = safe_sum(exp_eff.get("amount", []))
 
-# category breakup by ACTUAL (fallback amount)
-exp_cat = exp_eff.copy()
-if "actual" not in exp_cat.columns:
-    exp_cat["actual"] = pd.to_numeric(exp_cat.get("amount", 0), errors="coerce").fillna(0)
-else:
-    exp_cat["actual"] = pd.to_numeric(exp_cat.get("actual", 0), errors="coerce").fillna(0)
+# Category break-up (force numeric to avoid NaN issues)
+edited_exp_num = exp_eff.copy()
+edited_exp_num["amount"] = pd.to_numeric(edited_exp_num.get("amount", 0), errors="coerce").fillna(0)
+cat_break = (
+    edited_exp_num.groupby("category")["amount"].sum().reindex(CATEGORIES).fillna(0)
+)
 
-cat_break = exp_cat.groupby("category")["actual"].sum().reindex(CATEGORIES).fillna(0)
 necessity_spend = float(cat_break.get("Necessity", 0.0))
-need_spend      = float(cat_break.get("Need", 0.0))
-want_spend      = float(cat_break.get("Want", 0.0))
+need_spend = float(cat_break.get("Need", 0.0))
+want_spend = float(cat_break.get("Want", 0.0))
 
+# Left after necessities only (as per template)
 left_after_necessity = total_income - necessity_spend
+
+# Net cashflow after all expenses + planned savings
 net_left = total_income - (expense_total + planned_savings_amt)
+
+# Total Savings = Planned Savings + positive leftover (if any)
 total_savings = float(planned_savings_amt) + max(float(net_left), 0.0)
 
 # ----------------- Persist current edits -----------------
 if st.button("💾 Save Month", use_container_width=True):
+    # actually drop rows ticked for deletion
+    inc_clean = edited_inc[edited_inc.get("delete") != True].drop(columns=["delete"], errors="ignore")
+    exp_clean = edited_exp[edited_exp.get("delete") != True].drop(columns=["delete"], errors="ignore")
+    ps_clean  = edited_ps[edited_ps.get("delete") != True].drop(columns=["delete"], errors="ignore")
+
     data[mkey] = {
-        "incomes": inc_eff.to_dict(orient="records"),
-        "expenses": exp_eff.to_dict(orient="records"),  # contains amount + actual
-        "planned_savings": ps_eff.to_dict(orient="records"),
+        "incomes": inc_clean.to_dict(orient="records"),
+        "expenses": exp_clean.to_dict(orient="records"),
+        "planned_savings": ps_clean.to_dict(orient="records"),
         "one_off_inflows": month_obj.get("one_off_inflows", []),
     }
     save_data(data)
     st.success(f"Saved for {mkey} (deleted rows removed)")
 
 # ----------------- Metrics Row -----------------
+# Compute category totals for display
+category_totals = {
+    "Necessity": necessity_spend,
+    "Need": need_spend,
+    "Want": want_spend,
+    "Savings": planned_savings_amt,
+}
+
 st.markdown("## 🧾 Monthly Summary")
 st.markdown("<br>", unsafe_allow_html=True)
 
+# First row — Income / Expense / Savings
 r1c1, r1c2, r1c3 = st.columns([1, 1, 1])
 r1c1.metric("Total Income", inr(total_income))
-r1c2.metric("Total Expenses (Actual)", inr(expense_total))
+r1c2.metric("Total Expenses", inr(expense_total))
 r1c3.metric("Planned Savings", inr(planned_savings_amt))
 
 st.markdown("<br>", unsafe_allow_html=True)
 
+# Second row — Net values
 r2c1, r2c2, r2c3 = st.columns([1, 1, 1])
-r2c1.metric("Left after Necessity (Actual)", inr(left_after_necessity))
+r2c1.metric("Left after Necessity", inr(left_after_necessity))
 r2c2.metric("Net Left (month)", inr(net_left))
 r2c3.metric("Total Savings", inr(total_savings))
 
 st.markdown("<br>", unsafe_allow_html=True)
 
+# Third row — Category totals (now with Need)
 r3c1, r3c2, r3c3  = st.columns([1, 1, 1])
-r3c1.metric("Necessity Spend (Actual)", inr(necessity_spend))
-r3c2.metric("Need Spend (Actual)", inr(need_spend))
-r3c3.metric("Want Spend (Actual)", inr(want_spend))
+r3c1.metric("Necessity Spend", inr(category_totals["Necessity"]))
+r3c2.metric("Need Spend", inr(category_totals["Need"]))
+r3c3.metric("Want Spend", inr(category_totals["Want"]))
 
 st.markdown("<br>", unsafe_allow_html=True)
+
 st.markdown("<hr>", unsafe_allow_html=True)
 
 # ----------------- Visuals -----------------
@@ -304,6 +296,7 @@ fig_mix, axm = plt.subplots(figsize=(6, 4), dpi=120)
 fig_mix.patch.set_alpha(0)
 axm.set_facecolor("none")
 
+# Guard against NaNs / all-zeros for pie chart
 vals = [necessity_spend, need_spend, want_spend]
 vals = list(np.nan_to_num(np.array(vals, dtype=float), nan=0.0, posinf=0.0, neginf=0.0))
 labels = ["Necessity", "Need", "Want"]
@@ -322,9 +315,9 @@ summary_df = pd.DataFrame(
     {
         "Metric": [
             "Total Income",
-            "Actual Expenses",
+            "Total Expenses",
             "Planned Savings",
-            "Left after Necessity (Actual)",
+            "Left after Necessity",
             "Net Left (month)",
             "Total Savings",
         ],
@@ -345,7 +338,10 @@ st.divider()
 st.header("📊 Month-over-Month (last 6 months)")
 
 cur_first = start_of_month(msel)
-months, net_left_series, exp_series, inc_series = [], [], [], []
+months = []
+net_left_series = []
+exp_series = []
+inc_series = []
 
 for i in range(5, -1, -1):
     mnum = (cur_first.year * 12 + cur_first.month - 1) - i
@@ -357,22 +353,19 @@ for i in range(5, -1, -1):
 
     mo = data.get(k)
     if not mo:
-        inc = 0.0; ex = 0.0; ps = 0.0
+        inc = 0.0
+        ex = 0.0
+        ps = 0.0
     else:
         inc = safe_sum(pd.DataFrame(mo.get("incomes", []))["amount"]) if mo.get("incomes") else 0.0
-
-        exp_df = pd.DataFrame(mo.get("expenses", [])) if mo.get("expenses") else pd.DataFrame()
-        if not exp_df.empty:
-            ex = safe_sum(exp_df["actual"]) if "actual" in exp_df.columns else safe_sum(exp_df.get("amount", []))
-        else:
-            ex = 0.0
-
+        ex  = safe_sum(pd.DataFrame(mo.get("expenses", []))["amount"]) if mo.get("expenses") else 0.0
         ps  = safe_sum(pd.DataFrame(mo.get("planned_savings", []))["amount"]) if mo.get("planned_savings") else 0.0
 
     inc_series.append(inc)
     exp_series.append(ex)
     net_left_series.append(inc - (ex + ps))
 
+# ---- SANITIZE + GUARDS ----
 def _clean(arr):
     a = np.array(arr, dtype=float)
     return np.nan_to_num(a, nan=0.0, posinf=0.0, neginf=0.0)
@@ -381,6 +374,7 @@ inc_arr = _clean(inc_series)
 exp_arr = _clean(exp_series)
 net_arr = _clean(net_left_series)
 
+# If nothing to plot, show a friendly note and skip pyplot
 if len(months) == 0:
     st.info("No months to display yet.")
 else:
@@ -395,7 +389,7 @@ else:
         x = np.arange(len(months))
         barw = 0.25
         axb.bar(x - barw, inc_arr, width=barw, label="Income")
-        axb.bar(x,         exp_arr, width=barw, label="Expenses (Actual)")
+        axb.bar(x,         exp_arr, width=barw, label="Expenses")
         axb.bar(x + barw,  net_arr, width=barw, label="Net Left")
         axb.set_xticks(x)
         axb.set_xticklabels(months)
@@ -403,13 +397,15 @@ else:
         axb.legend()
         axb.grid(True, linestyle="--", alpha=0.4)
 
+        # Annotations only if there is a visible peak
         peak = float(np.max(np.abs(net_arr)))
         if peak > 0:
             bump = peak * 0.02
             for idx, val in enumerate(net_arr):
-                ypos = float(val) + (bump if val >= 0 else -bump)
-                axb.text(idx + barw, ypos, inr(val), ha="center", va="bottom" if val>=0 else "top", fontsize=8)
+                axb.text(idx + barw, float(val) + bump, inr(val), ha="center", fontsize=8)
 
+        # Extra safety: disable tight layout (can fail with NaN artists)
+        # and avoid passing extra kwargs to st.pyplot
         st.pyplot(fig_bar, use_container_width=True)
 
 # ----------------- One-off inflows -----------------
@@ -429,11 +425,17 @@ edited_one = st.data_editor(
 )
 
 if st.button("💾 Save One-off Inflows", use_container_width=True):
-    data.setdefault(mkey, {"incomes": [], "expenses": [], "planned_savings": [], "one_off_inflows": []})
+    data.setdefault(mkey, {
+        "incomes": [],
+        "expenses": [],
+        "planned_savings": [],
+        "one_off_inflows": [],
+    })
     data[mkey]["one_off_inflows"] = edited_one.to_dict(orient="records")
     save_data(data)
     st.success("One-off inflows saved.")
 
+# Show upcoming inflows affecting selected month
 upcoming = []
 for k_arch, mo in data.items():
     for row in mo.get("one_off_inflows", []):
@@ -448,20 +450,23 @@ if upcoming:
 st.divider()
 st.header("🧾 Current Month Sheet & Saved History")
 
+# Build a single 'sheet' for the current month (income + expenses + planned savings)
 cur_sheet_rows = []
 for r in inc_eff.to_dict(orient="records"):
     cur_sheet_rows.append({"Type": "Income", "Name": r.get("source", ""), "Category": "Income", "Amount": r.get("amount", 0.0), "Note": r.get("note", "")})
 for r in exp_eff.to_dict(orient="records"):
-    amt_for_sheet = r.get("actual", r.get("amount", 0.0))
-    cur_sheet_rows.append({"Type": "Expense", "Name": r.get("item", ""), "Category": r.get("category", ""), "Amount": amt_for_sheet, "Note": r.get("note", "")})
+    cur_sheet_rows.append({"Type": "Expense", "Name": r.get("item", ""), "Category": r.get("category", ""), "Amount": r.get("amount", 0.0), "Note": r.get("note", "")})
 for r in ps_eff.to_dict(orient="records"):
     cur_sheet_rows.append({"Type": "Planned Saving", "Name": r.get("name", ""), "Category": r.get("category", "Savings"), "Amount": r.get("amount", 0.0), "Note": r.get("note", "")})
 
 st.subheader(f"Sheet — {mkey}")
 
+# ---- Edit as a single sheet (add/remove rows any time) ----
 cur_sheet_df = pd.DataFrame(cur_sheet_rows)
 if cur_sheet_df.empty:
-    cur_sheet_df = pd.DataFrame([{"Type": "Income", "Name": "", "Category": "Income", "Amount": 0.0, "Note": ""}])
+    cur_sheet_df = pd.DataFrame([
+        {"Type": "Income", "Name": "", "Category": "Income", "Amount": 0.0, "Note": ""}
+    ])
 
 edited_sheet = st.data_editor(
     cur_sheet_df,
@@ -477,29 +482,49 @@ edited_sheet = st.data_editor(
 col_a, col_b = st.columns([1, 1])
 with col_a:
     if st.button("💾 Save Sheet Edits (sync)", use_container_width=True):
+        # split the single edited sheet back into structured tables
         tmp = edited_sheet.fillna("")
-        incomes_new, expenses_new, ps_new = [], [], []
-
+        # Incomes
+        incomes_new = []
         for _, r in tmp[tmp["Type"] == "Income"].iterrows():
-            amt = float(r.get("Amount", 0) or 0)
-            incomes_new.append({"source": str(r.get("Name","")), "amount": amt, "note": str(r.get("Note",""))})
-
+            try:
+                amt = float(r.get("Amount", 0) or 0)
+            except Exception:
+                amt = 0.0
+            incomes_new.append({
+                "source": str(r.get("Name", "")),
+                "amount": amt,
+                "note": str(r.get("Note", "")),
+            })
+        # Expenses
+        expenses_new = []
         for _, r in tmp[tmp["Type"] == "Expense"].iterrows():
-            amt = float(r.get("Amount", 0) or 0)
+            try:
+                amt = float(r.get("Amount", 0) or 0)
+            except Exception:
+                amt = 0.0
             cat = str(r.get("Category", "") or "Necessity")
             expenses_new.append({
-                "item": str(r.get("Name","")),
-                "amount": amt,           # keep budget reference
-                "actual": amt,           # sync from sheet edit
+                "item": str(r.get("Name", "")),
+                "amount": amt,
                 "category": cat if cat in CATEGORIES else "Necessity",
-                "note": str(r.get("Note","")),
+                "note": str(r.get("Note", "")),
             })
-
+        # Planned Savings
+        ps_new = []
         for _, r in tmp[tmp["Type"] == "Planned Saving"].iterrows():
-            amt = float(r.get("Amount", 0) or 0)
+            try:
+                amt = float(r.get("Amount", 0) or 0)
+            except Exception:
+                amt = 0.0
             cat = str(r.get("Category", "") or "Savings")
-            ps_new.append({"name": str(r.get("Name","")), "amount": amt, "note": str(r.get("Note","")), "category": "Savings" if cat not in CATEGORIES else cat})
-
+            ps_new.append({
+                "name": str(r.get("Name", "")),
+                "amount": amt,
+                "note": str(r.get("Note", "")),
+                "category": "Savings" if cat not in CATEGORIES else cat,
+            })
+        # Persist
         data[mkey] = {
             "incomes": incomes_new,
             "expenses": expenses_new,
@@ -519,7 +544,7 @@ with col_b:
         use_container_width=True,
     )
 
-# Archive/save the sheet for this month
+# Archive/save the sheet for this month (to analyze later)
 if st.button("📦 Save/Archive Current Month Sheet", use_container_width=True):
     snapshot = {
         "month": mkey,
@@ -546,16 +571,15 @@ archives = data.get("_archives", {})
 if not archives:
     st.info("No archived sheets yet. Use the button above to save the current month.")
 else:
+    # Show latest first
     keys_sorted = sorted(archives.keys(), reverse=True)
     for mk in keys_sorted:
         snap = archives[mk]
         met = snap.get("metrics", {})
         with st.expander(f"{mk} — Savings: {inr(met.get('total_savings', 0.0))} | Net Left: {inr(met.get('net_left', 0.0))}"):
+            # Mini summary table
             sum_df = pd.DataFrame({
-                "Metric": [
-                    "Total Income", "Total Expenses (Actual)",
-                    "Planned Savings", "Left after Necessity (Actual)", "Net Left", "Total Savings"
-                ],
+                "Metric": ["Total Income", "Total Expenses", "Planned Savings", "Left after Necessity", "Net Left", "Total Savings"],
                 "Amount": [
                     met.get("total_income", 0.0),
                     met.get("total_expenses", 0.0),
@@ -567,12 +591,12 @@ else:
             })
             st.table(sum_df)
 
+            # Recreate the combined sheet DF for download
             arch_rows = []
             for r in snap.get("incomes", []):
                 arch_rows.append({"Type": "Income", "Name": r.get("source", ""), "Category": "Income", "Amount": r.get("amount", 0.0), "Note": r.get("note", "")})
             for r in snap.get("expenses", []):
-                amt_for_sheet = r.get("actual", r.get("amount", 0.0))
-                arch_rows.append({"Type": "Expense", "Name": r.get("item", ""), "Category": r.get("category", ""), "Amount": amt_for_sheet, "Note": r.get("note", "")})
+                arch_rows.append({"Type": "Expense", "Name": r.get("item", ""), "Category": r.get("category", ""), "Amount": r.get("amount", 0.0), "Note": r.get("note", "")})
             for r in snap.get("planned_savings", []):
                 arch_rows.append({"Type": "Planned Saving", "Name": r.get("name", ""), "Category": r.get("category", "Savings"), "Amount": r.get("amount", 0.0), "Note": r.get("note", "")})
             arch_df = pd.DataFrame(arch_rows)
@@ -586,4 +610,4 @@ else:
                 key=f"dl_{mk}",
             )
 
-st.caption("Analogy: ‘amount’ tumhara target hai, ‘actual’ ground reality. Dono ko saath dekhke variance pakdo aur overspend ko jaldi thamo.")
+st.caption("Tip: Treat 'Planned Savings' like money you must pay yourself first — it reduces 'Net Left'. One-off inflows are tracked separately until realized.")
